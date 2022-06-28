@@ -3,11 +3,14 @@
 #include <fstream>
 #include <iomanip>
 #include <ctime>
-double k1 = 6, k2 = 6, b1 = 0.05, b2 = 0.08;
+#include <complex>
+#include <valarray>
+
+
 double m1 = 2, m2 = 2;
 double l = 100.0;
 
-double eps[10] = {0.1, -0.1, 0.2, -0.2, 0.15, -0.15, 0.25, -0.25, 0.3, -0.3};
+double eps[6] = {0.01, -0.01, 0.02, -0.02, 0.015, -0.015};
 
 struct coeff {
 	double k1, k2, b1, b2;
@@ -87,6 +90,35 @@ double dv2db1(double x1, double x2, double v1, double v2, double k1, double k2, 
 double dv2db2(double x1, double x2, double v1, double v2, double k1, double k2, double b1, double b2) {
 	return -v2 / m2;
 }
+
+
+const double PI = 3.141592653589793238460;
+
+typedef std::complex<double> Complex;
+typedef std::valarray<Complex> CArray;
+
+void fft(CArray& x)
+{
+	const size_t N = x.size();
+	if (N <= 1) return;
+
+	// divide
+	CArray even = x[std::slice(0, N / 2, 2)];
+	CArray  odd = x[std::slice(1, N / 2, 2)];
+
+	// conquer
+	fft(even);
+	fft(odd);
+
+	// combine
+	for (size_t k = 0; k < N / 2; ++k)
+	{
+		Complex t = std::polar(1.0, -2 * PI * k / N) * odd[k];
+		x[k] = even[k] + t;
+		x[k + N / 2] = even[k] - t;
+	}
+}
+
 
 void updateSystem(std::vector<Body> body, double** dxdp, double** ndxdp, coeff _c)
 {
@@ -212,22 +244,22 @@ double** inversion(double** A, int n, int m)
 	return A;
 }
 
-void updateMethod(double** beta) {
 
-}
-
-void GaussNewthon(std::vector<Body> body, std::vector<std::pair<double, double**>> deriv) {
+void GaussNewthon(std::vector<Body> body, std::vector<std::pair<double, double**>> deriv, std::vector<double> &B) {
 	double** beta = new double* [8];
 	{
 		for (int i = 0; i < 8; i++)
 			beta[i] = new double[1];
-		beta[2][0] = beta[3][0] = 0;
-		beta[0][0] = 150;
-		beta[1][0] = 350;
-		beta[4][0] = beta[5][0] = 5.8;
-		beta[6][0] = beta[7][0] = 0.04;
+		beta[2][0] = B[2];
+		beta[3][0] = B[3];
+		beta[0][0] = B[0];
+		beta[1][0] = B[1];
+		beta[4][0] = B[4];
+		beta[5][0] = B[5];
+		beta[6][0] = B[6];
+		beta[7][0] = B[7];
 	}
-
+	B.clear();
 
 	double** A = new double* [40];
 	double** W = new double* [40];
@@ -235,7 +267,7 @@ void GaussNewthon(std::vector<Body> body, std::vector<std::pair<double, double**
 	double* r = new double[40];
 
 	for (int i = 0; i < 40; i++) {
-		r[i] = eps[rand() % 10];
+		r[i] = eps[rand() % 6];
 	}
 
 	for (int i = 0; i < 40; i++)
@@ -318,21 +350,31 @@ void GaussNewthon(std::vector<Body> body, std::vector<std::pair<double, double**
 	for (int i = 0; i < 8; i++) {
 		rBeta[i] = new double[1];
 		rBeta[i][0] = beta[i][0] - mTmp[i][0];
+		B.push_back(rBeta[i][0]);
 	}
 
-	//updateMethod(beta);
-	std::cout << rBeta[4][0] << " " << rBeta[5][0] << " " << rBeta[6][0] << " " << rBeta[7][0] << '\n';
 
 }
 
 void f(std::vector<Body>& body, std::vector<Body>& dot, double** ndxdp, double** dxdp) {
-	
+	double k1 = 6, k2 = 6, b1 = 0.05, b2 = 0.08;
 
 	dot[0].x = body[0].v;
 	dot[0].v = (-k1 * (body[0].x - l) - b1 * body[0].v + k2 * (body[1].x - body[0].x - l) + b2 * body[1].v) / m1;
 	dot[1].x = body[1].v;
 	dot[1].v = (-k2 * (body[1].x - body[0].x - l) - b2 * body[1].v) / m2;
 	coeff _c = {k1,k2,b1,b2};
+	updateSystem(body, dxdp, ndxdp, _c);
+}
+
+void fT(std::vector<Body>& body, std::vector<Body>& dot, double** ndxdp, double** dxdp, std::vector<double> B) {
+	double k1 = 6, k2 = 6, b1 = 0.05, b2 = 0.08;
+	coeff _c = { B[4],B[5],B[6],B[7] };
+	dot[0].x = body[0].v;
+	dot[0].v = (-_c.k1 * (body[0].x - l) - _c.b1 * body[0].v + _c.k2 * (body[1].x - body[0].x - l) + _c.b2 * body[1].v) / m1;
+	dot[1].x = body[1].v;
+	dot[1].v = (-_c.k2 * (body[1].x - body[0].x - l) - _c.b2 * body[1].v) / m2;
+	
 	updateSystem(body, dxdp, ndxdp, _c);
 }
 
@@ -400,7 +442,66 @@ void RungeKutta(std::vector<Body>& body, double** dxdp, double h, void (*f)(std:
 			dxdp[i][j] += ((km1[i][j] + km2[i][j] * 2 + km3[i][j] * 2 + km4[i][j]) * h / 6);
 }
 
+void RungeKuttaT(std::vector<Body>& body, double** dxdp, double h, void (*fT)(std::vector<Body>&, std::vector<Body>&, double**, double**, std::vector<double> B), std::vector<double> B) {
+	std::vector<Body> k1, k2, k3, k4, st;
+	double** km1 = new double* [4],
+		** km2 = new double* [4],
+		** km3 = new double* [4],
+		** km4 = new double* [4],
+		** stm = new double* [4];
+	for (int i = 0; i < 4; ++i)
+	{
+		km1[i] = new double[8],
+			km2[i] = new double[8],
+			km3[i] = new double[8],
+			km4[i] = new double[8],
+			stm[i] = new double[8];
 
+		for (int j = 0; j < 8; ++j)
+		{
+			km1[i][j] = 0;
+			km2[i][j] = 0;
+			km3[i][j] = 0;
+			km4[i][j] = 0;
+			stm[i][j] = 0;
+		}
+	}
+
+	for (int i = 0; i < body.size(); ++i)
+	{
+		k1.push_back(Body());
+		k2.push_back(Body());
+		k3.push_back(Body());
+		k4.push_back(Body());
+		st.push_back(Body());
+	}
+	fT(body, k1, km1, dxdp,B);
+	step(st, body, k1, dxdp, km1, stm, h);
+	fT(st, k2, km2, stm, B);
+
+	step(st, body, k2, dxdp, km2, stm, h);
+	fT(st, k3, km3, stm, B);
+
+	step(st, body, k3, dxdp, km3, stm, h * 2);
+	fT(st, k4, km4, stm, B);
+
+	for (int i = 0; i < body.size(); ++i) {
+		body[i] = body[i] + ((k1[i] + k2[i] * 2 + k3[i] * 2 + k4[i]) * h / 6);
+	}
+
+	for (int i = 0; i < 4; ++i)
+		for (int j = 0; j < 8; ++j)
+			dxdp[i][j] += ((km1[i][j] + km2[i][j] * 2 + km3[i][j] * 2 + km4[i][j]) * h / 6);
+}
+
+bool doubleEquals(CArray arr1, CArray arr2, CArray correctArr1, CArray correctArr2) {
+	double epsilon = 1006.7;
+	for (int i = 0; i < 20; i++) {
+		if (std::fabs(arr1[i].real() - correctArr1[i].real()) > epsilon || std::fabs(arr2[i].real() - correctArr2[i].real()) > epsilon)
+			return false;
+	}
+	return true;
+}
 
 int main() {
 	srand(time(NULL));
@@ -452,6 +553,8 @@ int main() {
 	body.push_back(Body(150, 0));
 	body.push_back(Body(350, 0));
 
+	std::vector<std::pair<double,double>> positions, correctPositions;
+	bool canAdd = true;
 
 	sf::RectangleShape obj1, obj2;
 	obj1.setOrigin(25,25);
@@ -494,6 +597,8 @@ int main() {
 		if (t - int(t) < h)
 		{
 			file << t << " " << body[0].x << " " << body[1].x << '\n';
+			positions.push_back(std::make_pair(body[0].x, body[1].x));
+			if (canAdd)	correctPositions.push_back(std::make_pair(body[0].x, body[1].x));
 			deriv.push_back(std::make_pair(t, dXdP));
 			for (int i = 0; i < 4; ++i) {
 				for (int j = 0; j < 8; ++j)
@@ -510,6 +615,61 @@ int main() {
 	}
 
 	file.close();
-	GaussNewthon(body, deriv);
+	canAdd = false;
+	Complex correctArr1[20], correctArr2[20];
+	for (int i = 0; i < 20; i++)
+	{
+		correctArr1[i] = correctPositions[i].first;
+		correctArr2[i] = correctPositions[i].second;
+	}
+	Complex arr1[20], arr2[20];
+	CArray data1, data2, correctData1, correctData2;
+	std::vector<double> B = {150,350,0,0,5.95,6.05,0.045,0.075};
+	int k = 0;
+	while (true) {
+		std::vector<std::pair<double, double**>> derivTmp;
+		derivTmp = deriv;
+		GaussNewthon(body, derivTmp, B);
+		for (int i = 0; i < 20; i++)
+		{
+			arr1[i] = positions[i].first;
+			arr2[i] = positions[i].second;
+		}
+		data1 = CArray(arr1, 20);
+		data2 = CArray(arr2, 20);
+		correctData1 = CArray(correctArr1, 20);
+		correctData2 = CArray(correctArr2, 20);
+		fft(data1);
+		fft(data2);
+		fft(correctData1);
+		fft(correctData2);
+		if (k != 0 && doubleEquals(data1, data2, correctData1, correctData2))
+			break;
+		double ta = 0;
+		k++;
+		double** dXdPT = new double* [4];
+		for (int i = 0; i < 4; i++)
+		{
+			dXdPT[i] = new double[8];
+			for (int j = 0; j < 8; ++j)
+				if (i == j) dXdPT[i][j] = 1;
+				else dXdPT[i][j] = 0;
+		}
+		std::vector<Body> bodyT;
+		bodyT.push_back(Body(150, 0));
+		bodyT.push_back(Body(350, 0));
+		derivTmp.clear();
+		positions.clear();
+		while (ta <= 20) {
+			RungeKuttaT(bodyT, dXdPT, h, fT,B);
+			ta += h;
+
+			if (ta - (int)ta > h) {
+				positions.push_back(std::make_pair(bodyT[0].x, bodyT[1].x));
+				derivTmp.push_back(std::make_pair(t, dXdPT));
+			}
+		}
+	}
+	std::cout << B[4] << ' ' << B[5] << ' ' << B[6] << ' ' << B[7] << '\n';
 	return 0;
 }
